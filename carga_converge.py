@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import math
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -469,6 +470,40 @@ def apply_fixed_audit_values(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def to_db_value(value):
+    """Convierte valores de pandas/numpy a tipos nativos seguros para psycopg2."""
+    if pd.isna(value):
+        return None
+
+    # Convierte escalares numpy (np.float64, np.int64, etc.) a tipos Python puros
+    if hasattr(value, "item") and callable(getattr(value, "item")):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+
+    # Limpia textos con patrón literal de numpy (ej: 'np.float64(12.3)')
+    if isinstance(value, str):
+        txt = value.strip()
+        m_float = re.fullmatch(r"np\.float64\(([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\)", txt)
+        m_int = re.fullmatch(r"np\.int64\(([-+]?\d+)\)", txt)
+        if m_float:
+            return float(m_float.group(1))
+        if m_int:
+            return int(m_int.group(1))
+        return txt
+
+    # Evita NaN/Inf en float nativo
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+
+    # Timestamp pandas a datetime nativo
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+
+    return value
+
+
 def insert_valid_rows(
     df: pd.DataFrame,
     conn_params: Dict[str, str],
@@ -479,7 +514,7 @@ def insert_valid_rows(
     if df.empty:
         return 0
 
-    rows = [tuple(None if pd.isna(v) else v for v in row) for row in df[INSERT_COLS].itertuples(index=False, name=None)]
+    rows = [tuple(to_db_value(v) for v in row) for row in df[INSERT_COLS].itertuples(index=False, name=None)]
     total = len(rows)
 
     sql = f"""
