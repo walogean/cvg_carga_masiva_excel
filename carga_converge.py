@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -71,8 +73,87 @@ NUMERIC_COLS = [
     "existencias",
 ]
 
-# Valores fijos de auditoría para cargas masivas
+# Usuario fijo para trazabilidad de carga masiva
 MASSIVE_IMPORT_USER = "Massive Import"
+
+# Mapeo de cabeceras Excel -> nombres de columna en base de datos
+# Clave: nombre de cabecera canonicalizado (sin acentos, minúsculas, sin símbolos)
+HEADER_ALIASES = {
+    "periodo": "periodo",
+    "operacioncdg": "operacion_cdg",
+    "id": "id_externo",
+    "proyectoindicador": "proyecto_indicador",
+    "proyectoindicador2": "proyecto_indicador2",
+    "empresa": "empresa",
+    "empresa5": "empresa5",
+    "mercadoglobalhom": "mercado_global_hom",
+    "mercadoindrahomgln": "mercado_indra_homg_ln",
+    "mercadoindrahomgnorg": "mercado_indra_homg_norg",
+    "mercadoindragroup": "mercado_indra_group",
+    "nivelorg2": "nivel_org_2",
+    "unidaddeempresaano": "unidad_empresa_ano",
+    "unidaddeempresaano8": "unidad_empresa_ano8",
+    "clientecontractual": "cliente_contractual",
+    "metacliente": "metacliente",
+    "interlocutor": "interlocutor",
+    "intergruporev": "intergrupo_rev",
+    "intergruporevfyc": "intergrupo_rev_fyc",
+    "intersegmento": "intersegmento",
+    "segmentolineadenegocio": "segmento_linea_negocio",
+    "geografiahom": "geografia_hom",
+    "pais": "pais",
+    "regiondefensa": "region_defensa",
+    "aftermarket": "aftermarket",
+    "clasedeproyecto": "clase_proyecto",
+    "tipoproyectoservicionivel1": "tipo_proyecto_servicio_nivel_1",
+    "tipoproyectoservicionivel2": "tipo_proyecto_servicio_nivel_2",
+    "tipoproyectoservicionivel3": "tipo_proyecto_servicio_nivel_3",
+    "solucionnivel2": "solucion_nivel_2",
+    "solucionnivel3": "solucion_nivel_3",
+    "gerentevertical": "gerente_vertical",
+    "gestorvertical": "gestor_vertical",
+    "fechainicioproyecto": "fecha_inicio_proyecto",
+    "fechafinproyecto": "fecha_fin_proyecto",
+    "grandesprogdef": "grandes_prog_def",
+    "metodoreconocimientoingreso7": "metodo_reconocimiento_ingreso7",
+    "indicadoragrupacion": "indicador_agrupacion",
+    "mercadoindra": "mercado_indra",
+    "auditable": "auditable",
+    "mision": "mision",
+    "programa": "programa",
+    "valores": "valores",
+    "contratacion": "contratacion",
+    "ventas": "ventas",
+    "margenbruto": "margen_bruto",
+    "costesdirectos": "costes_directos",
+    "cdircorporativos": "c_dir_corporativos",
+    "cdirauxiliares": "c_dir_auxiliares",
+    "celaboracionofertas": "c_elaboracion_ofertas",
+    "disponibilidad": "disponibilidad",
+    "actividadesid": "actividades_id",
+    "desviaciontasa": "desviacion_tasa",
+    "margendirecto": "margen_directo",
+    "indirectos": "indirectos",
+    "costesindirectosdemercado": "costes_indirectos_mercado",
+    "costesindirectosdeproduccion": "costes_indirectos_produccion",
+    "costesindirectoscomerciales": "costes_indirectos_comerciales",
+    "margencontribucion": "margen_contribucion",
+    "estructura": "estructura",
+    "indemnizaciones": "indemnizaciones",
+    "funcionescorporativas": "funciones_corporativas",
+    "restoestructura": "resto_estructura",
+    "ebit": "ebit",
+    "amortizacion": "amortizacion",
+    "facturacion": "facturacion",
+    "cobros": "cobros",
+    "carteracomfinal": "cartera_com_final",
+    "mgcarteracomfinal": "mg_cartera_com_final",
+    "carterafinfinal": "cartera_fin_final",
+    "deuda": "deuda",
+    "dpf": "dpf",
+    "alo": "alo",
+    "existencias": "existencias",
+}
 
 # Columnas que se deben insertar (excluye id serial)
 INSERT_COLS = [
@@ -210,10 +291,32 @@ def pick_excel_file(input_dir: Path, file_name: str | None = None) -> Path:
     return candidates[0]
 
 
+def canonicalize_header(header: str) -> str:
+    """Normaliza una cabecera para hacer match robusto con aliases de Excel."""
+    txt = str(header).strip().lower()
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    txt = re.sub(r"[^a-z0-9]+", "", txt)
+    return txt
+
+
 def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
-    """Normaliza cabeceras para evitar errores por mayúsculas/espacios."""
+    """Normaliza cabeceras y las mapea al naming de base de datos."""
     df = df.copy()
-    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    mapped_cols = []
+    used = set()
+    for raw_col in df.columns:
+        key = canonicalize_header(raw_col)
+        mapped = HEADER_ALIASES.get(key, key)
+
+        # Evita nombres duplicados tras mapear; conserva el original canonicalizado como fallback
+        if mapped in used:
+            mapped = f"{mapped}__dup"
+        used.add(mapped)
+        mapped_cols.append(mapped)
+
+    df.columns = mapped_cols
     return df
 
 

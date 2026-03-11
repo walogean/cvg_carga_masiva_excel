@@ -9,6 +9,8 @@ Proceso en Python para cargar datos desde Excel a la tabla:
 1. Toma un Excel de una carpeta (último por fecha o por nombre).
 2. Carga el archivo en un DataFrame de pandas.
 3. Limpia datos básicos (cabeceras, espacios, vacíos).
+   - Incluye mapeo automático de nombres de columna del Excel (con/sin acentos, espacios o símbolos)
+     al naming de base de datos (por ejemplo: `Operación CdG` -> `operacion_cdg`, `ID` -> `id_externo`).
 4. Valida tipos según la tabla:
    - solo sobre columnas que vienen en Excel (`EXCEL_COLS`)
    - fechas (`date`) con control de parseo y rango de año (1900-2100)
