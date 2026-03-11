@@ -339,24 +339,46 @@ def apply_fixed_audit_values(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def insert_valid_rows(df: pd.DataFrame, conn_params: Dict[str, str], batch_size: int = 1000) -> int:
+def insert_valid_rows(
+    df: pd.DataFrame,
+    conn_params: Dict[str, str],
+    batch_size: int = 1000,
+    progress_every: int = 10_000,
+) -> int:
     """Inserta en bloque los registros válidos en PostgreSQL y devuelve cuántos se insertaron."""
     if df.empty:
         return 0
 
     rows = [tuple(None if pd.isna(v) else v for v in row) for row in df[INSERT_COLS].itertuples(index=False, name=None)]
+    total = len(rows)
 
     sql = f"""
         INSERT INTO {SCHEMA}.{TABLE} ({', '.join(INSERT_COLS)})
         VALUES %s
     """
 
+    inserted = 0
+    next_progress_mark = progress_every
+
     with psycopg2.connect(**conn_params) as conn:
         with conn.cursor() as cur:
-            execute_values(cur, sql, rows, page_size=batch_size)
+            for start in range(0, total, batch_size):
+                end = min(start + batch_size, total)
+                chunk = rows[start:end]
+                execute_values(cur, sql, chunk, page_size=batch_size)
+                inserted = end
+
+                # Reporte de avance cada N registros
+                while inserted >= next_progress_mark:
+                    print(f"[PROGRESO] Insertados {next_progress_mark} de {total} registros")
+                    next_progress_mark += progress_every
+
         conn.commit()
 
-    return len(rows)
+    if inserted % progress_every != 0:
+        print(f"[PROGRESO] Insertados {inserted} de {total} registros")
+
+    return inserted
 
 
 def export_invalid(invalid_df: pd.DataFrame, output_dir: Path) -> Path | None:
@@ -378,6 +400,13 @@ def main() -> None:
     parser.add_argument("--ini-path", required=True, help="Ruta al fichero .ini de conexión")
     parser.add_argument("--ini-section", default="postgres", help="Sección del .ini")
     parser.add_argument("--output-dir", default="./salidas", help="Carpeta para exportar inválidos")
+    parser.add_argument("--batch-size", type=int, default=1000, help="Tamaño de lote para inserción en BD")
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=10000,
+        help="Mostrar progreso cada N registros insertados",
+    )
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -401,7 +430,12 @@ def main() -> None:
     valid_df = apply_fixed_audit_values(result.valid_df)
 
     invalid_path = export_invalid(result.invalid_df, output_dir)
-    inserted = insert_valid_rows(valid_df, conn_params)
+    inserted = insert_valid_rows(
+        valid_df,
+        conn_params,
+        batch_size=args.batch_size,
+        progress_every=args.progress_every,
+    )
 
     print("[RESUMEN]")
     print(f"- Filas leídas: {len(df_raw)}")

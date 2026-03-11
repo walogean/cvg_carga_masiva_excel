@@ -71,6 +71,16 @@ Opcionalmente, para un fichero concreto:
 --file-name "archivo.xlsx"
 ```
 
+Opciones útiles:
+
+```bash
+--batch-size 1000
+--progress-every 10000
+```
+
+- `--batch-size`: tamaño del lote de inserción en PostgreSQL.
+- `--progress-every`: muestra avance de inserción cada N registros (por ejemplo, 10.000 de X).
+
 ## Salidas
 
 - Inserción de registros válidos en PostgreSQL.
