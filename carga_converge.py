@@ -27,6 +27,10 @@ from psycopg2.extras import execute_values
 SCHEMA = "proyecto_dashboard_defensa"
 TABLE = "converge_proyectos_financieros"
 
+# Reglas de negocio para fechas
+MIN_YEAR = 1900
+MAX_YEAR = 2100
+
 DATE_COLS = [
     "fecha_carga",
     "periodo",
@@ -227,8 +231,18 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
     for col in DATE_COLS:
         original = df[col]
         parsed = pd.to_datetime(original, errors="coerce", dayfirst=True)
-        bad = original.notna() & (original.astype(str).str.strip() != "") & parsed.isna()
+
+        # Error de parseo: formato inválido (ej. mes 54, día 99, texto no fecha)
+        bad_parse = original.notna() & (original.astype(str).str.strip() != "") & parsed.isna()
+
+        # Error de rango de año: evita fechas técnicamente parseables pero no válidas para negocio (ej. año 0123)
+        bad_year_range = parsed.notna() & ((parsed.dt.year < MIN_YEAR) | (parsed.dt.year > MAX_YEAR))
+
+        bad = bad_parse | bad_year_range
         errors.append(bad.rename(f"error_{col}"))
+
+        # Si no pasa validación, se deja nulo para no insertar valor incorrecto
+        parsed = parsed.where(~bad, pd.NaT)
         df[col] = parsed.dt.date
 
     # Validación/transformación de numéricos
@@ -268,6 +282,13 @@ def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
         bad = normalized.notna() & ~normalized.isin([True, False])
         errors.append(bad.rename(f"error_{col}"))
         df[col] = normalized.where(normalized.isin([True, False]), pd.NA)
+
+    # Validación cruzada: fecha_inicio_proyecto no puede ser posterior a fecha_fin_proyecto
+    if "fecha_inicio_proyecto" in df.columns and "fecha_fin_proyecto" in df.columns:
+        start = pd.to_datetime(df["fecha_inicio_proyecto"], errors="coerce")
+        end = pd.to_datetime(df["fecha_fin_proyecto"], errors="coerce")
+        bad_date_order = start.notna() & end.notna() & (start > end)
+        errors.append(bad_date_order.rename("error_rango_fechas_proyecto"))
 
     # deleted_row: default false
     if "deleted_row" in df.columns:
