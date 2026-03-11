@@ -64,6 +64,7 @@ python3 carga_converge.py \
   --input-dir "/ruta/carpeta_excels" \
   --ini-path "/ruta/db.ini" \
   --ini-section "postgres" \
+  --sheet-name "bbdd" \
   --output-dir "./salidas"
 ```
 
@@ -82,6 +83,7 @@ Opciones útiles:
 
 - `--batch-size`: tamaño del lote de inserción en PostgreSQL.
 - `--progress-every`: muestra avance de inserción cada N registros (por ejemplo, 10.000 de X).
+- `--sheet-name`: hoja de Excel a procesar (por defecto `bbdd`).
 
 ## Salidas
 

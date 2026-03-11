@@ -330,6 +330,31 @@ def clean_text_values(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def drop_non_data_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina filas completamente vacías y filas de resumen al final del Excel."""
+    df = df.copy()
+
+    # Quita filas donde todas las columnas de entrada estén vacías
+    non_empty_mask = df[EXCEL_COLS].notna().any(axis=1)
+    df = df.loc[non_empty_mask].copy()
+
+    # Quita filas de resumen típicas: 'col/columna', 'datos', 'nulos'
+    if {"periodo", "operacion_cdg", "id_externo"}.issubset(df.columns):
+        p = df["periodo"].astype("string").str.strip().str.lower()
+        o = df["operacion_cdg"].astype("string").str.strip().str.lower()
+        i = df["id_externo"].astype("string").str.strip().str.lower()
+
+        summary_mask = p.isin(["col", "columna", "column"]) & (
+            o.str.contains("dato", na=False) | o.str.contains("cantidad", na=False)
+        ) & (
+            i.str.contains("nulo", na=False) | i.str.contains("vacio", na=False) | i.str.contains("vacío", na=False)
+        )
+
+        df = df.loc[~summary_mask].copy()
+
+    return df
+
+
 def validate_and_transform(df_raw: pd.DataFrame) -> ValidationResult:
     """Valida campos por tipo y separa registros válidos e inválidos con detalle de errores."""
     df = df_raw.copy()
@@ -502,6 +527,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Carga y validación de Excel a PostgreSQL")
     parser.add_argument("--input-dir", required=True, help="Carpeta donde está el Excel")
     parser.add_argument("--file-name", required=False, help="Nombre del Excel (opcional)")
+    parser.add_argument("--sheet-name", default="bbdd", help="Nombre de hoja Excel a procesar")
     parser.add_argument("--ini-path", required=True, help="Ruta al fichero .ini de conexión")
     parser.add_argument("--ini-section", default="postgres", help="Sección del .ini")
     parser.add_argument("--output-dir", default="./salidas", help="Carpeta para exportar inválidos")
@@ -524,10 +550,11 @@ def main() -> None:
     excel_file = pick_excel_file(input_dir, args.file_name)
     conn_params = read_db_config(ini_path, args.ini_section)
 
-    print(f"[INFO] Leyendo Excel: {excel_file}")
-    df_raw = pd.read_excel(excel_file)
+    print(f"[INFO] Leyendo Excel: {excel_file} (hoja: {args.sheet_name})")
+    df_raw = pd.read_excel(excel_file, sheet_name=args.sheet_name)
     df_raw = normalize_headers(df_raw)
     df_raw = clean_text_values(df_raw)
+    df_raw = drop_non_data_rows(df_raw)
 
     result = validate_and_transform(df_raw)
 
