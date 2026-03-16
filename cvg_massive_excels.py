@@ -173,30 +173,35 @@ def get_insertable_columns(metadata: List[ColumnMeta]) -> List[str]:
     return cols
 
 
-def build_column_map(cfg: configparser.ConfigParser, target_columns: List[str]) -> Dict[str, str]:
-    # Mapeo automático: nombre canonicalizado de columna destino -> columna destino
-    target_key_map = {canonicalize_header(col): col for col in target_columns}
-
-    # Mapeo manual opcional desde [column_map]
+def get_config_column_map(cfg: configparser.ConfigParser) -> Dict[str, str]:
+    """Lee mapeos manuales desde [column_map]."""
     custom_map: Dict[str, str] = {}
     if "column_map" in cfg:
         for raw_name, target_col in cfg["column_map"].items():
             custom_map[canonicalize_header(raw_name)] = target_col.strip()
+    return custom_map
 
-    return {**target_key_map, **custom_map}
+
+def load_mapping_store(mapping_path: Path) -> configparser.ConfigParser:
+    """Carga/crea mapping.ini persistente para reutilizar homologaciones por tabla."""
+    cp = configparser.ConfigParser()
+    cp.optionxform = str
+    if mapping_path.exists():
+        cp.read(mapping_path, encoding="utf-8")
+    return cp
 
 
-def find_best_target_column(
-    raw_col: str,
-    target_columns: List[str],
-    target_key_map: Dict[str, str],
-    threshold: float,
-) -> str | None:
-    """Busca la mejor columna destino por similitud textual sobre nombre canonicalizado."""
-    raw_key = canonicalize_header(raw_col)
-    if raw_key in target_key_map:
-        return target_key_map[raw_key]
+def get_stored_table_map(mapping_cp: configparser.ConfigParser, table_section: str) -> Dict[str, str]:
+    """Obtiene mapeos guardados para una tabla concreta."""
+    out: Dict[str, str] = {}
+    if table_section in mapping_cp:
+        for src, target in mapping_cp[table_section].items():
+            out[canonicalize_header(src)] = target.strip()
+    return out
 
+
+def find_best_target_column(raw_key: str, target_columns: List[str], threshold: float) -> tuple[str | None, float]:
+    """Busca mejor match por similitud textual; retorna (columna, score)."""
     best_col = None
     best_score = 0.0
     for tgt in target_columns:
@@ -204,40 +209,71 @@ def find_best_target_column(
         if score > best_score:
             best_score = score
             best_col = tgt
-
     if best_col and best_score >= threshold:
-        return best_col
-    return None
+        return best_col, best_score
+    return None, best_score
 
 
-def normalize_headers(
-    df: pd.DataFrame,
-    mapped_keys: Dict[str, str],
+def propose_header_mapping(
+    raw_headers: List[str],
     target_columns: List[str],
+    cfg_map: Dict[str, str],
+    stored_map: Dict[str, str],
     similarity_threshold: float,
 ) -> pd.DataFrame:
+    """Genera propuesta de homologación columna Excel -> columna tabla con método y score."""
+    target_key_map = {canonicalize_header(col): col for col in target_columns}
+    rows = []
+
+    for raw_col in raw_headers:
+        raw_key = canonicalize_header(raw_col)
+        mapped = None
+        method = ""
+        score = None
+
+        if raw_key in cfg_map:
+            mapped = cfg_map[raw_key]
+            method = "config_map"
+            score = 1.0
+        elif raw_key in stored_map:
+            mapped = stored_map[raw_key]
+            method = "mapping_ini"
+            score = 1.0
+        elif raw_key in target_key_map:
+            mapped = target_key_map[raw_key]
+            method = "exact"
+            score = 1.0
+        else:
+            mapped, score = find_best_target_column(raw_key, target_columns, similarity_threshold)
+            if mapped:
+                method = "fuzzy"
+            else:
+                mapped = to_snake_name(raw_col)
+                method = "fallback"
+                score = 0.0
+
+        rows.append(
+            {
+                "excel_columna": raw_col,
+                "excel_normalizada": to_snake_name(raw_col),
+                "tabla_columna_propuesta": mapped,
+                "metodo": method,
+                "score": round(float(score), 4) if score is not None else None,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def apply_mapping_to_dataframe(df: pd.DataFrame, mapping_df: pd.DataFrame) -> pd.DataFrame:
+    """Aplica homologación aprobada al DataFrame, gestionando duplicados."""
     df = df.copy()
+    col_map = dict(zip(mapping_df["excel_columna"], mapping_df["tabla_columna_propuesta"]))
+
     mapped_cols: List[str] = []
     used = set()
-
-    target_key_map = {canonicalize_header(c): c for c in target_columns}
-
     for raw_col in df.columns:
-        key = canonicalize_header(raw_col)
-
-        mapped = mapped_keys.get(key)
-        if not mapped:
-            mapped = find_best_target_column(
-                raw_col=raw_col,
-                target_columns=target_columns,
-                target_key_map=target_key_map,
-                threshold=similarity_threshold,
-            )
-
-        # Si no hay match con tabla, deja fallback snake_case para trazabilidad
-        if not mapped:
-            mapped = to_snake_name(raw_col)
-
+        mapped = col_map.get(raw_col, to_snake_name(raw_col))
         if mapped in used:
             mapped = f"{mapped}__dup"
         used.add(mapped)
@@ -245,6 +281,46 @@ def normalize_headers(
 
     df.columns = mapped_cols
     return df
+
+
+def save_mapping_ini(mapping_path: Path, table_section: str, mapping_df: pd.DataFrame) -> None:
+    """Guarda homologación propuesta en mapping.ini para reutilización futura."""
+    cp = load_mapping_store(mapping_path)
+    if table_section not in cp:
+        cp[table_section] = {}
+
+    for _, row in mapping_df.iterrows():
+        cp[table_section][str(row["excel_columna"])] = str(row["tabla_columna_propuesta"])
+
+    with mapping_path.open("w", encoding="utf-8") as f:
+        cp.write(f)
+
+
+def export_mapping_review(mapping_df: pd.DataFrame, output_dir: Path, schema: str, table: str) -> Path:
+    """Exporta homologación a Excel para revisión manual."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = output_dir / f"mapping_review_{schema}_{table}_{ts}.xlsx"
+    mapping_df.to_excel(out, index=False)
+    return out
+
+
+def confirm_mapping(mapping_df: pd.DataFrame, mapping_path: Path, review_path: Path) -> str:
+    """Muestra homologación y espera confirmación del usuario: si/no/recargar."""
+    print("\n[HOMOLOGACION] Propuesta columnas Excel -> Tabla")
+    print(mapping_df.to_string(index=False))
+    print(f"\n[HOMOLOGACION] mapping.ini: {mapping_path}")
+    print(f"[HOMOLOGACION] reporte excel: {review_path}")
+
+    while True:
+        ans = input("¿El mapeo es correcto? [si/no/recargar]: ").strip().lower()
+        if ans in {"si", "s", "yes", "y"}:
+            return "yes"
+        if ans in {"no", "n"}:
+            return "no"
+        if ans in {"recargar", "r", "reload"}:
+            return "reload"
+        print("Respuesta no válida. Usa: si / no / recargar")
 
 
 def clean_text_values(df: pd.DataFrame) -> pd.DataFrame:
@@ -549,6 +625,11 @@ def export_invalid(invalid_df: pd.DataFrame, output_dir: Path) -> Path | None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Carga masiva genérica Excel -> PostgreSQL")
     parser.add_argument("--config-path", help="Ruta a config.ini (por defecto, junto al script)")
+    parser.add_argument(
+        "--auto-approve-mapping",
+        action="store_true",
+        help="Aprueba mapeo automáticamente sin interacción",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -565,6 +646,8 @@ def main() -> None:
     sheet_name = cfg["input"].get("sheet_name", fallback="bbdd")
 
     output_dir = Path(cfg["output"].get("output_dir", "./salidas"))
+    mapping_file = cfg["output"].get("mapping_file", fallback="mapping.ini")
+    mapping_path = (script_dir / mapping_file).resolve() if not Path(mapping_file).is_absolute() else Path(mapping_file)
 
     batch_size = cfg["run"].getint("batch_size", fallback=1000)
     progress_every = cfg["run"].getint("progress_every", fallback=10000)
@@ -579,19 +662,56 @@ def main() -> None:
     insert_cols = get_insertable_columns(metadata)
 
     fixed_cols = list(cfg["fixed_values"].keys()) if "fixed_values" in cfg else []
+    target_columns = [c for c in insert_cols if c not in fixed_cols]
 
-    col_map = build_column_map(cfg, [c for c in insert_cols if c not in fixed_cols])
+    cfg_map = get_config_column_map(cfg)
+    table_section = f"{schema}.{table}"
 
     excel_file = pick_excel_file(input_dir, file_name)
     print(f"[INFO] Leyendo Excel: {excel_file} (hoja: {sheet_name})")
 
     df_raw = pd.read_excel(excel_file, sheet_name=sheet_name)
-    df_raw = normalize_headers(
-        df_raw,
-        mapped_keys=col_map,
-        target_columns=[c for c in insert_cols if c not in fixed_cols],
+
+    # 1) Proponer homologación
+    stored_map = get_stored_table_map(load_mapping_store(mapping_path), table_section)
+    mapping_df = propose_header_mapping(
+        raw_headers=[str(c) for c in df_raw.columns],
+        target_columns=target_columns,
+        cfg_map=cfg_map,
+        stored_map=stored_map,
         similarity_threshold=similarity_threshold,
     )
+
+    # 2) Exportar homologación y guardar mapping.ini para revisión
+    review_path = export_mapping_review(mapping_df, output_dir, schema, table)
+    save_mapping_ini(mapping_path, table_section, mapping_df)
+
+    # 3) Confirmar homologación antes de cargar
+    if args.auto_approve_mapping:
+        decision = "yes"
+        print("[HOMOLOGACION] Auto-aprobada por --auto-approve-mapping")
+    else:
+        decision = confirm_mapping(mapping_df, mapping_path, review_path)
+        while decision == "reload":
+            print("\n[HOMOLOGACION] Recargando mapping.ini actualizado...")
+            stored_map = get_stored_table_map(load_mapping_store(mapping_path), table_section)
+            mapping_df = propose_header_mapping(
+                raw_headers=[str(c) for c in df_raw.columns],
+                target_columns=target_columns,
+                cfg_map=cfg_map,
+                stored_map=stored_map,
+                similarity_threshold=similarity_threshold,
+            )
+            review_path = export_mapping_review(mapping_df, output_dir, schema, table)
+            save_mapping_ini(mapping_path, table_section, mapping_df)
+            decision = confirm_mapping(mapping_df, mapping_path, review_path)
+
+    if decision == "no":
+        print("[INFO] Carga detenida por usuario. Ajusta mapping.ini y ejecuta de nuevo.")
+        return
+
+    # 4) Aplicar homologación aprobada y continuar proceso
+    df_raw = apply_mapping_to_dataframe(df_raw, mapping_df)
     df_raw = clean_text_values(df_raw)
 
     excel_input_cols = [c for c in insert_cols if c not in fixed_cols]

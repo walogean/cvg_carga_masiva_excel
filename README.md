@@ -7,8 +7,10 @@ Se añadió una versión nueva y reutilizable para cualquier tabla destino de Po
 ### Características
 
 - Lee metadata real de la tabla (`information_schema.columns`) y valida por tipo.
-- Mapea automáticamente cabeceras de Excel a columnas destino (normalización robusta).
-- Permite mapeos manuales extra en sección `[column_map]`.
+- Homologa columnas Excel -> tabla y **muestra la propuesta en consola**.
+- Exporta propuesta de homologación a Excel y la guarda en `mapping.ini` reutilizable por tabla.
+- Pide confirmación interactiva: `si / no / recargar` antes de insertar.
+- Permite mapeos manuales extra en sección `[column_map]` de `config.ini`.
 - Soporta valores fijos configurables para columnas no presentes en Excel (`[fixed_values]`).
 - Exporta inválidos y realiza carga masiva por lotes con progreso.
 
@@ -26,10 +28,21 @@ Se añadió una versión nueva y reutilizable para cualquier tabla destino de Po
 python3 cvg_massive_excels.py
 ```
 
+En modo interactivo, el script mostrará la homologación propuesta y esperará:
+- `si` -> continúa y carga.
+- `no` -> detiene la carga.
+- `recargar` -> vuelve a leer `mapping.ini` (útil tras editarlo).
+
 Opcional, especificando ruta de config:
 
 ```bash
 python3 cvg_massive_excels.py --config-path "/ruta/config.ini"
+```
+
+Opcional sin interacción (aprobación automática):
+
+```bash
+python3 cvg_massive_excels.py --auto-approve-mapping
 ```
 
 ---
