@@ -187,6 +187,30 @@ def prompt_choice(title: str, options: List[str]) -> str:
         print("Selección inválida, intenta de nuevo.")
 
 
+def choose_sheet_name(excel_path: Path, preferred_sheet: str | None) -> str:
+    """Resuelve hoja a usar: preferida, única disponible o selección interactiva."""
+    xls = pd.ExcelFile(excel_path)
+    sheets = xls.sheet_names
+
+    if not sheets:
+        raise ValueError(f"El Excel {excel_path.name} no contiene hojas.")
+
+    preferred = (preferred_sheet or "").strip()
+    if preferred and preferred in sheets:
+        return preferred
+
+    if len(sheets) == 1:
+        chosen = sheets[0]
+        print(f"[INFO] El Excel tiene una sola hoja. Usando: {chosen}")
+        return chosen
+
+    if preferred:
+        print(f"[INFO] La hoja configurada '{preferred}' no existe en {excel_path.name}.")
+
+    print(f"[INFO] Hojas disponibles: {', '.join(sheets)}")
+    return prompt_choice("Selecciona la hoja con datos a cargar", sheets)
+
+
 def read_excel_with_sheet(excel_path: Path, sheet_name: str) -> pd.DataFrame:
     """Lee una hoja de Excel y muestra opciones claras si la hoja no existe."""
     try:
@@ -815,9 +839,10 @@ def main() -> None:
     table_section = f"{schema}.{table}"
 
     excel_file = pick_excel_file(input_dir, file_name)
-    print(f"[INFO] Leyendo Excel: {excel_file} (hoja: {sheet_name})")
+    resolved_sheet_name = choose_sheet_name(excel_file, sheet_name)
+    print(f"[INFO] Leyendo Excel: {excel_file} (hoja: {resolved_sheet_name})")
 
-    df_raw = read_excel_with_sheet(excel_file, sheet_name)
+    df_raw = read_excel_with_sheet(excel_file, resolved_sheet_name)
 
     # 1) Proponer homologación
     stored_map = get_stored_table_map(load_mapping_store(mapping_path), table_section)

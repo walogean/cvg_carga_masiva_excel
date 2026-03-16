@@ -35,9 +35,13 @@ python cvg_massive_excels.py
 Flujo:
 1. Pregunta si el import es para Defensa.
 2. Propone homologación de columnas Excel -> tabla.
-3. Exporta homologación a Excel y guarda/actualiza `mapping.ini`.
-4. Pide confirmación (`si/no/recargar`).
-5. Si confirmas, valida e inserta en BD.
+3. Si la hoja configurada existe, la usa.
+   Si el Excel tiene una sola hoja, la usa automáticamente.
+   Si tiene varias hojas y no coincide la configurada, pregunta cuál cargar.
+4. Propone homologación de columnas Excel -> tabla.
+5. Exporta homologación a Excel y guarda/actualiza `mapping.ini`.
+6. Pide confirmación (`si/no/recargar`).
+7. Si confirmas, valida e inserta en BD.
 
 ---
 
