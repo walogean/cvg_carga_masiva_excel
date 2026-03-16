@@ -191,8 +191,8 @@ def prompt_choice(title: str, options: List[str]) -> str:
 
 def choose_sheet_name(excel_path: Path, preferred_sheet: str | None) -> str:
     """Resuelve hoja a usar: preferida, única disponible o selección interactiva."""
-    xls = pd.ExcelFile(excel_path)
-    sheets = xls.sheet_names
+    with pd.ExcelFile(excel_path) as xls:
+        sheets = xls.sheet_names
 
     if not sheets:
         raise ValueError(f"El Excel {excel_path.name} no contiene hojas.")
@@ -219,8 +219,8 @@ def read_excel_with_sheet(excel_path: Path, sheet_name: str) -> pd.DataFrame:
         return pd.read_excel(excel_path, sheet_name=sheet_name)
     except ValueError as e:
         if "Worksheet named" in str(e):
-            xls = pd.ExcelFile(excel_path)
-            available = ", ".join(xls.sheet_names)
+            with pd.ExcelFile(excel_path) as xls:
+                available = ", ".join(xls.sheet_names)
             raise ValueError(
                 f"La hoja '{sheet_name}' no existe en {excel_path.name}. "
                 f"Hojas disponibles: {available}. "
