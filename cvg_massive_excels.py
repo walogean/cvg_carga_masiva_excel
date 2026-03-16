@@ -187,6 +187,22 @@ def prompt_choice(title: str, options: List[str]) -> str:
         print("Selección inválida, intenta de nuevo.")
 
 
+def read_excel_with_sheet(excel_path: Path, sheet_name: str) -> pd.DataFrame:
+    """Lee una hoja de Excel y muestra opciones claras si la hoja no existe."""
+    try:
+        return pd.read_excel(excel_path, sheet_name=sheet_name)
+    except ValueError as e:
+        if "Worksheet named" in str(e):
+            xls = pd.ExcelFile(excel_path)
+            available = ", ".join(xls.sheet_names)
+            raise ValueError(
+                f"La hoja '{sheet_name}' no existe en {excel_path.name}. "
+                f"Hojas disponibles: {available}. "
+                "Corrige [input].sheet_name en config.ini y vuelve a ejecutar."
+            ) from e
+        raise
+
+
 def get_table_metadata(conn_params: Dict[str, str], schema: str, table: str) -> List[ColumnMeta]:
     sql = """
         SELECT
@@ -207,7 +223,11 @@ def get_table_metadata(conn_params: Dict[str, str], schema: str, table: str) -> 
             rows = cur.fetchall()
 
     if not rows:
-        raise ValueError(f"No se encontró metadata para {schema}.{table}")
+        raise ValueError(
+            f"No se encontró metadata para {schema}.{table}. "
+            "Verifica [target]/[target_defensa] en config.ini, el dbname/usuario y permisos del usuario. "
+            "También puedes ejecutar con --interactive-target para elegir schema/tabla desde consola."
+        )
 
     return [
         ColumnMeta(
@@ -780,7 +800,10 @@ def main() -> None:
     similarity_threshold = cfg["run"].getfloat("similarity_threshold", fallback=0.78)
 
     if not input_dir.exists() or not input_dir.is_dir():
-        raise NotADirectoryError(f"Carpeta de entrada inválida: {input_dir}")
+        raise NotADirectoryError(
+            f"Carpeta de entrada inválida: {input_dir}. "
+            "Crea la carpeta (por ejemplo ./inputs) o corrige [input].input_dir en config.ini."
+        )
 
     metadata = get_table_metadata(conn_params, schema, table)
     insert_cols = get_insertable_columns(metadata)
@@ -794,7 +817,7 @@ def main() -> None:
     excel_file = pick_excel_file(input_dir, file_name)
     print(f"[INFO] Leyendo Excel: {excel_file} (hoja: {sheet_name})")
 
-    df_raw = pd.read_excel(excel_file, sheet_name=sheet_name)
+    df_raw = read_excel_with_sheet(excel_file, sheet_name)
 
     # 1) Proponer homologación
     stored_map = get_stored_table_map(load_mapping_store(mapping_path), table_section)
@@ -894,4 +917,33 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except FileNotFoundError as e:
+        print("\n[ERROR] Archivo no encontrado")
+        print(f"Detalle: {e}")
+        print("Acción: valida rutas en config.ini (input_dir, file_name, config-path) y vuelve a ejecutar.")
+    except NotADirectoryError as e:
+        print("\n[ERROR] Carpeta inválida")
+        print(f"Detalle: {e}")
+        print("Acción: crea la carpeta indicada o corrige [input].input_dir en config.ini.")
+    except KeyError as e:
+        print("\n[ERROR] Configuración incompleta")
+        print(f"Detalle: {e}")
+        print("Acción: completa las secciones/campos faltantes en config.ini usando config.example.ini como guía.")
+    except ValueError as e:
+        print("\n[ERROR] Validación/configuración")
+        print(f"Detalle: {e}")
+        print("Acción: corrige configuración o estructura del Excel según el mensaje y vuelve a ejecutar.")
+    except psycopg2.OperationalError as e:
+        print("\n[ERROR] Conexión a base de datos")
+        print(f"Detalle: {e}")
+        print("Acción: revisa host/port/dbname/user/password, red/VPN y permisos de acceso.")
+    except psycopg2.Error as e:
+        print("\n[ERROR] Error PostgreSQL")
+        print(f"Detalle: {e}")
+        print("Acción: revisa schema/tabla/columnas y tipos de datos; ajusta mapping/config y reintenta.")
+    except Exception as e:
+        print("\n[ERROR] Error inesperado")
+        print(f"Detalle: {e}")
+        print("Acción: revisa el traceback y comparte el error para diagnóstico.")

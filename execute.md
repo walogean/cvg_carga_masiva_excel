@@ -122,14 +122,14 @@ Cuando el script pregunta:
 
 ---
 
-## 10) Ejecutar en Spyder (IPython)
+## 11) Manejo de errores (mensajes guiados)
 
-```python
-%runfile "C:/ruta/cvg_massive_excels.py" --args "--only-mapping"
-```
+El script captura errores comunes y muestra acción sugerida:
 
-Ejemplo completo con config explícita:
+- Archivo no encontrado -> revisar rutas de `config.ini`.
+- Carpeta de entrada inválida -> crear carpeta o corregir `input_dir`.
+- Hoja inexistente -> indica hojas disponibles y corregir `sheet_name`.
+- Tabla/schema no encontrados -> revisar `[target]`/`[target_defensa]`, credenciales y permisos.
+- Error de conexión PostgreSQL -> revisar host/puerto/dbname/usuario/password/VPN.
 
-```python
-%runfile "C:/ruta/cvg_massive_excels.py" --args "--config-path \"C:/ruta/config.ini\" --interactive-target"
-```
+Siempre que sea posible, corrige `config.ini` y vuelve a ejecutar.
