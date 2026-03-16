@@ -110,11 +110,16 @@ python cvg_massive_excels.py --auto-approve-mapping
 - `salidas/registros_invalidos_<timestamp>.xlsx` (si existen inválidos)
 - `mapping.ini` (persistente por tabla)
 - `inputs_retry/registros_invalidos_<timestamp>.xlsx` (copia para corrección y recarga puntual)
+- `retry_index.json` (relación entre parciales y reintentos para cierre automático)
 - Excel original marcado como procesado cuando hubo inserción:
   - `..._OK` si no hubo inválidos
   - `..._PARTIAL_ERROR` si hubo inválidos
   - `processed_mode=move` -> mueve a `excels_done/`
   - `processed_mode=rename` -> renombra en origen
+- Si el **reintento** termina 100% OK:
+  - se elimina el excel de `inputs_retry`
+  - se elimina el reporte de inválidos previo en `salidas`
+  - el archivo original `..._PARTIAL_ERROR` pasa a `..._OK`
 
 ---
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import configparser
 import difflib
+import json
 import math
 import re
 import shutil
@@ -717,6 +718,80 @@ def insert_valid_rows(
     return inserted
 
 
+def load_retry_index(index_path: Path) -> Dict[str, Dict[str, str]]:
+    """Carga índice de reintentos pendientes desde JSON."""
+    if not index_path.exists():
+        return {}
+    try:
+        with index_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_retry_index(index_path: Path, data: Dict[str, Dict[str, str]]) -> None:
+    """Guarda índice de reintentos pendientes en JSON."""
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    with index_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def register_retry_entry(
+    index_path: Path,
+    retry_file: Path,
+    original_processed_path: Path | None,
+    invalid_report_path: Path | None,
+) -> None:
+    """Registra relación reintento -> archivo original parcialmente cargado."""
+    db = load_retry_index(index_path)
+    db[retry_file.name] = {
+        "original_processed_path": str(original_processed_path) if original_processed_path else "",
+        "invalid_report_path": str(invalid_report_path) if invalid_report_path else "",
+    }
+    save_retry_index(index_path, db)
+
+
+def pop_retry_entry(index_path: Path, retry_file: Path) -> Dict[str, str] | None:
+    """Extrae y elimina metadata de un reintento completado."""
+    db = load_retry_index(index_path)
+    entry = db.pop(retry_file.name, None)
+    save_retry_index(index_path, db)
+    return entry
+
+
+def safe_delete(path: Path | None) -> None:
+    """Elimina archivo si existe, ignorando errores."""
+    if not path:
+        return
+    try:
+        if path.exists() and path.is_file():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def rename_partial_to_ok(original_processed_path: Path) -> Path | None:
+    """Renombra un archivo marcado como PARTIAL_ERROR a OK."""
+    if not original_processed_path.exists():
+        return None
+
+    stem = original_processed_path.stem
+    if "_PARTIAL_ERROR" in stem:
+        new_stem = stem.replace("_PARTIAL_ERROR", "_OK")
+    elif stem.endswith("_OK"):
+        return original_processed_path
+    else:
+        new_stem = f"{stem}_OK"
+
+    candidate = original_processed_path.with_name(f"{new_stem}{original_processed_path.suffix}")
+    if candidate.exists():
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = original_processed_path.with_name(f"{new_stem}_{ts}{original_processed_path.suffix}")
+    original_processed_path.replace(candidate)
+    return candidate
+
+
 def choose_load_mode(input_dir: Path, retry_input_dir: Path) -> Path:
     """Pregunta si la carga es inicial o reintento y devuelve carpeta fuente."""
     print("\n[SELECCION] Tipo de carga")
@@ -849,6 +924,8 @@ def main() -> None:
     processed_dir_cfg = cfg["output"].get("processed_dir", fallback="./excels_done")
     processed_dir = (script_dir / processed_dir_cfg).resolve() if not Path(processed_dir_cfg).is_absolute() else Path(processed_dir_cfg)
     loaded_suffix = cfg["output"].get("loaded_suffix", fallback="_LOADED")
+    retry_index_file = cfg["output"].get("retry_index_file", fallback="retry_index.json")
+    retry_index_path = (script_dir / retry_index_file).resolve() if not Path(retry_index_file).is_absolute() else Path(retry_index_file)
 
     batch_size = cfg["run"].getint("batch_size", fallback=1000)
     progress_every = cfg["run"].getint("progress_every", fallback=10000)
@@ -863,6 +940,7 @@ def main() -> None:
         )
 
     selected_input_dir = choose_load_mode(input_dir=input_dir, retry_input_dir=retry_input_dir)
+    is_retry_mode = selected_input_dir.resolve() == retry_input_dir.resolve()
     if not selected_input_dir.exists() or not selected_input_dir.is_dir():
         raise NotADirectoryError(
             f"Carpeta seleccionada inválida: {selected_input_dir}. "
@@ -969,6 +1047,8 @@ def main() -> None:
     if invalid_path:
         print(f"- Reporte inválidos: {invalid_path}")
 
+    processed_path: Path | None = None
+
     # Si hubo inválidos, deja copia en carpeta de reintentos
     if len(result.invalid_df) > 0:
         retry_copy = copy_invalid_to_retry(invalid_path, retry_input_dir)
@@ -989,6 +1069,34 @@ def main() -> None:
         if processed_path:
             estado = "parcial con errores" if partial else "completa"
             print(f"- Excel marcado como carga {estado}: {processed_path}")
+
+        # Registrar pendiente de resolución cuando es carga parcial inicial
+        if (not is_retry_mode) and partial and retry_copy:
+            register_retry_entry(
+                index_path=retry_index_path,
+                retry_file=retry_copy,
+                original_processed_path=processed_path,
+                invalid_report_path=invalid_path,
+            )
+
+    # Si es reintento y quedó completo sin inválidos: limpiar artefactos y actualizar estado a OK
+    if is_retry_mode and inserted == len(df_raw) and len(result.invalid_df) == 0:
+        entry = pop_retry_entry(retry_index_path, excel_file)
+
+        # 1) eliminar fichero de reintento consumido
+        safe_delete(excel_file)
+
+        # 2) eliminar reporte de inválidos histórico (si existe en índice)
+        if entry and entry.get("invalid_report_path"):
+            safe_delete(Path(entry["invalid_report_path"]))
+
+        # 3) renombrar original PARTIAL_ERROR a OK
+        if entry and entry.get("original_processed_path"):
+            updated = rename_partial_to_ok(Path(entry["original_processed_path"]))
+            if updated:
+                print(f"- Original parcial actualizado a OK: {updated}")
+
+        print("- Reintento completado: limpiados archivos de retry/salida asociados.")
 
 
 if __name__ == "__main__":
