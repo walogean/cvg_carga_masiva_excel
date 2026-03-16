@@ -145,4 +145,6 @@ El script captura errores comunes y muestra acción sugerida:
 - Tabla/schema no encontrados -> revisar `[target]`/`[target_defensa]`, credenciales y permisos.
 - Error de conexión PostgreSQL -> revisar host/puerto/dbname/usuario/password/VPN.
 
+Además, en limpieza básica convierte marcadores vacíos frecuentes a `NULL` (por ejemplo `-`, `--`, `N/A`).
+
 Siempre que sea posible, corrige `config.ini` y vuelve a ejecutar.

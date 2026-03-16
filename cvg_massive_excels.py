@@ -434,7 +434,20 @@ def clean_text_values(df: pd.DataFrame) -> pd.DataFrame:
     object_cols = df.select_dtypes(include=["object", "string"]).columns
     for col in object_cols:
         df[col] = df[col].astype("string").str.strip()
-        df[col] = df[col].replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
+        # Normaliza marcadores vacíos frecuentes a nulo
+        df[col] = df[col].replace(
+            {
+                "": pd.NA,
+                "-": pd.NA,
+                "--": pd.NA,
+                "—": pd.NA,
+                "–": pd.NA,
+                "nan": pd.NA,
+                "None": pd.NA,
+                "N/A": pd.NA,
+                "n/a": pd.NA,
+            }
+        )
     return df
 
 
