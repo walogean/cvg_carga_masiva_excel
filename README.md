@@ -45,6 +45,12 @@ Opcional sin interacción (aprobación automática):
 python3 cvg_massive_excels.py --auto-approve-mapping
 ```
 
+Opcional elegir schema/tabla en consola (en vez de usar [target]):
+
+```bash
+python3 cvg_massive_excels.py --interactive-target
+```
+
 Opcional solo homologación (sin insertar):
 
 ```bash

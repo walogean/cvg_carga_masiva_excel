@@ -127,6 +127,55 @@ def pick_excel_file(input_dir: Path, file_name: str | None = None) -> Path:
     return candidates[0]
 
 
+def fetch_available_schemas(conn_params: Dict[str, str]) -> List[str]:
+    """Obtiene schemas de usuario visibles en la base de datos."""
+    sql = """
+        SELECT schema_name
+        FROM information_schema.schemata
+        WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+          AND schema_name NOT LIKE 'pg_temp_%'
+          AND schema_name NOT LIKE 'pg_toast_temp_%'
+        ORDER BY schema_name
+    """
+    with psycopg2.connect(**conn_params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return [r[0] for r in cur.fetchall()]
+
+
+def fetch_tables_in_schema(conn_params: Dict[str, str], schema: str) -> List[str]:
+    """Lista tablas base en un schema dado."""
+    sql = """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = %s
+          AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+    """
+    with psycopg2.connect(**conn_params) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (schema,))
+            return [r[0] for r in cur.fetchall()]
+
+
+def prompt_choice(title: str, options: List[str]) -> str:
+    """Muestra opciones en consola y pide selección por índice."""
+    if not options:
+        raise ValueError(f"No hay opciones disponibles para: {title}")
+
+    print(f"\n[SELECCION] {title}")
+    for i, opt in enumerate(options, 1):
+        print(f"  {i}. {opt}")
+
+    while True:
+        raw = input(f"Selecciona una opción (1-{len(options)}): ").strip()
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(options):
+                return options[idx - 1]
+        print("Selección inválida, intenta de nuevo.")
+
+
 def get_table_metadata(conn_params: Dict[str, str], schema: str, table: str) -> List[ColumnMeta]:
     sql = """
         SELECT
@@ -635,6 +684,11 @@ def main() -> None:
         action="store_true",
         help="Genera/valida homologación y sale sin insertar datos",
     )
+    parser.add_argument(
+        "--interactive-target",
+        action="store_true",
+        help="Permite seleccionar schema/tabla en consola a partir de lo disponible en BD",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -645,6 +699,13 @@ def main() -> None:
     conn_params = get_db_params(cfg)
     schema = cfg["target"].get("schema")
     table = cfg["target"].get("table")
+
+    if args.interactive_target:
+        schemas = fetch_available_schemas(conn_params)
+        schema = prompt_choice("Schema destino", schemas)
+        tables = fetch_tables_in_schema(conn_params, schema)
+        table = prompt_choice(f"Tabla destino en schema '{schema}'", tables)
+        print(f"[SELECCION] Usando destino: {schema}.{table}")
 
     input_dir = Path(cfg["input"].get("input_dir"))
     file_name = cfg["input"].get("file_name", fallback="").strip() or None
