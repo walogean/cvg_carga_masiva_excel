@@ -682,6 +682,37 @@ def export_invalid(invalid_df: pd.DataFrame, output_dir: Path) -> Path | None:
     return out
 
 
+def mark_excel_as_processed(
+    excel_path: Path,
+    mode: str,
+    done_dir: Path,
+    loaded_suffix: str = "_LOADED",
+) -> Path | None:
+    """Marca el Excel procesado moviéndolo a carpeta done o renombrándolo."""
+    mode = (mode or "none").strip().lower()
+    if mode == "none":
+        return None
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if mode == "move":
+        done_dir.mkdir(parents=True, exist_ok=True)
+        destination = done_dir / excel_path.name
+        if destination.exists():
+            destination = done_dir / f"{excel_path.stem}_{ts}{excel_path.suffix}"
+        excel_path.replace(destination)
+        return destination
+
+    if mode == "rename":
+        destination = excel_path.with_name(f"{excel_path.stem}{loaded_suffix}{excel_path.suffix}")
+        if destination.exists():
+            destination = excel_path.with_name(f"{excel_path.stem}{loaded_suffix}_{ts}{excel_path.suffix}")
+        excel_path.replace(destination)
+        return destination
+
+    raise ValueError("processed_mode debe ser: none, move o rename")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Carga masiva genérica Excel -> PostgreSQL")
     parser.add_argument("--config-path", help="Ruta a config.ini (por defecto, junto al script)")
@@ -736,6 +767,11 @@ def main() -> None:
     output_dir = Path(cfg["output"].get("output_dir", "./salidas"))
     mapping_file = cfg["output"].get("mapping_file", fallback="mapping.ini")
     mapping_path = (script_dir / mapping_file).resolve() if not Path(mapping_file).is_absolute() else Path(mapping_file)
+
+    processed_mode = cfg["output"].get("processed_mode", fallback="none")
+    processed_dir_cfg = cfg["output"].get("processed_dir", fallback="./excels_done")
+    processed_dir = (script_dir / processed_dir_cfg).resolve() if not Path(processed_dir_cfg).is_absolute() else Path(processed_dir_cfg)
+    loaded_suffix = cfg["output"].get("loaded_suffix", fallback="_LOADED")
 
     batch_size = cfg["run"].getint("batch_size", fallback=1000)
     progress_every = cfg["run"].getint("progress_every", fallback=10000)
@@ -844,6 +880,17 @@ def main() -> None:
     print(f"- Filas inválidas: {len(result.invalid_df)}")
     if invalid_path:
         print(f"- Reporte inválidos: {invalid_path}")
+
+    # Marca archivo como procesado solo cuando no hay inválidos y la carga fue completa
+    if inserted == len(df_raw) and len(result.invalid_df) == 0:
+        processed_path = mark_excel_as_processed(
+            excel_path=excel_file,
+            mode=processed_mode,
+            done_dir=processed_dir,
+            loaded_suffix=loaded_suffix,
+        )
+        if processed_path:
+            print(f"- Excel procesado marcado en: {processed_path}")
 
 
 if __name__ == "__main__":

@@ -101,9 +101,12 @@ python cvg_massive_excels.py --auto-approve-mapping
 
 ## 8) Archivos generados
 
-- `mapping.ini` (persistente; historial de homologación por tabla)
 - `salidas/mapping_review_<schema>_<table>_<timestamp>.xlsx`
 - `salidas/registros_invalidos_<timestamp>.xlsx` (si existen inválidos)
+- `mapping.ini` (persistente por tabla)
+- Excel original marcado como procesado **solo si la carga fue completa sin inválidos**:
+  - `processed_mode=move` -> mueve a `excels_done/`
+  - `processed_mode=rename` -> renombra con sufijo `_LOADED`
 
 ---
 
