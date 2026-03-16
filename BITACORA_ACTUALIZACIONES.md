@@ -17,6 +17,7 @@ El objetivo de las últimas iteraciones fue estabilizar flujo de carga inicial/r
 - Asegurar cierre de handles de Excel para evitar bloqueo de archivos.
 - Garantizar valores para columnas faltantes con `DEFAULT` de tabla cuando aplique.
 - Registrar errores por fila también en el Excel fuente (columna `errores`).
+- Añadir modo de operación más automatizable (non-interactive) y logging a archivo.
 
 ---
 
@@ -75,7 +76,34 @@ Se incorporó flujo explícito para columnas insertables que existen en tabla pe
 
 ---
 
+## Cambios adicionales (modo PRO)
+
+### 6) Logging a archivo
+**Archivo:** `cvg_massive_excels.py`
+- Nuevo flag: `--log-file <ruta>`
+- Duplica `stdout/stderr` a archivo (formato simple con marca de inicio de ejecución).
+
+### 7) Modo no interactivo completo
+**Archivo:** `cvg_massive_excels.py`
+- Nuevo flag: `--non-interactive`
+  - auto-aprueba homologación.
+  - auto-acepta columnas faltantes (DEFAULT/NULL).
+  - evita prompt de defensa cuando aplica (usa `target` por defecto).
+- Nuevo flag: `--target-section {target,target_defensa}` para fijar destino sin prompt.
+- Nuevo flag: `--load-mode {initial,retry}` para fijar carpeta de entrada sin prompt.
+- Nuevo flag: `--yes-missing-columns` para aceptar sólo la parte de faltantes sin activar todo non-interactive.
+
+### 8) Pruebas mínimas integradas (smoke tests)
+**Archivo:** `cvg_massive_excels.py`
+- Nuevo flag: `--run-tests`
+- Ejecuta asserts de funciones críticas:
+  - parseo de defaults SQL literales
+  - parseo de periodos (`ene-24`, `dic/2025`)
+  - parseo numérico (miles/decimales y literales `np.float64(...)`)
+  - parseo booleano básico
+
+---
+
 ## Próximos ajustes sugeridos (opcionales)
-- Auto-aceptar columnas faltantes cuando todas tengan default literal (sin preguntar).
 - Ajustar `mark_excel_as_processed` en modo `move` para mantener sufijo de estado (`_PARTIAL_ERROR`/`_OK`) también en nombre del archivo movido.
 - Añadir changelog resumido en `README.md` para visibilidad rápida.

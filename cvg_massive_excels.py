@@ -17,6 +17,7 @@ import json
 import math
 import re
 import shutil
+import sys
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -72,6 +73,36 @@ class ValidationResult:
     valid_df: pd.DataFrame
     invalid_df: pd.DataFrame
     error_messages: pd.Series
+
+
+def setup_logging(log_file: Path | None) -> None:
+    """Duplica salida stdout/stderr a archivo de log si se configura."""
+    if not log_file:
+        return
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    class Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for s in self.streams:
+                s.write(data)
+                s.flush()
+            return len(data)
+
+        def flush(self):
+            for s in self.streams:
+                s.flush()
+
+    fh = log_file.open("a", encoding="utf-8")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    fh.write(f"\n===== RUN START {ts} =====\n")
+    fh.flush()
+
+    sys.stdout = Tee(sys.stdout, fh)
+    sys.stderr = Tee(sys.stderr, fh)
 
 
 def canonicalize_header(header: str) -> str:
@@ -1080,18 +1111,51 @@ def main() -> None:
         action="store_true",
         help="Permite seleccionar schema/tabla en consola a partir de lo disponible en BD",
     )
+    parser.add_argument(
+        "--target-section",
+        choices=["target", "target_defensa"],
+        help="Sección de destino en config.ini para modo no interactivo o ejecución dirigida",
+    )
+    parser.add_argument(
+        "--load-mode",
+        choices=["initial", "retry"],
+        help="Modo de carga sin prompt: initial=input_dir, retry=retry_input_dir",
+    )
+    parser.add_argument(
+        "--yes-missing-columns",
+        action="store_true",
+        help="Acepta automáticamente columnas faltantes (usar DEFAULT/NULL) sin prompt",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Modo no interactivo: requiere target definido en config y acepta mapeo/columnas faltantes",
+    )
+    parser.add_argument(
+        "--log-file",
+        help="Ruta de log para duplicar salida de consola a archivo",
+    )
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
     config_path = Path(args.config_path) if args.config_path else (script_dir / "config.ini")
 
+    log_file = Path(args.log_file) if args.log_file else None
+    if log_file and not log_file.is_absolute():
+        log_file = (script_dir / log_file).resolve()
+    setup_logging(log_file)
+
     cfg = load_config(config_path)
 
     conn_params = get_db_params(cfg)
 
+    if args.non_interactive and args.interactive_target:
+        raise ValueError("--non-interactive no se puede combinar con --interactive-target")
+
     # Selección de destino por contexto de negocio
-    # - si --interactive-target: selección libre de schema/tabla desde BD
-    # - si no: pregunta si la carga es de defensa (usa [target_defensa]) o estándar (usa [target])
+    # - --interactive-target: selección libre de schema/tabla desde BD
+    # - --target-section: fuerza sección concreta sin prompt
+    # - por defecto: pregunta defensa/no defensa si existe [target_defensa]
     if args.interactive_target:
         schemas = fetch_available_schemas(conn_params)
         schema = prompt_choice("Schema destino", schemas)
@@ -1099,7 +1163,9 @@ def main() -> None:
         table = prompt_choice(f"Tabla destino en schema '{schema}'", tables)
         print(f"[SELECCION] Usando destino: {schema}.{table}")
     else:
-        if "target_defensa" in cfg:
+        if args.target_section:
+            target_section = args.target_section
+        elif "target_defensa" in cfg and not args.non_interactive:
             is_defensa = ask_yes_no("¿El import masivo es para Defensa?")
             target_section = "target_defensa" if is_defensa else "target"
         else:
@@ -1141,7 +1207,14 @@ def main() -> None:
             "Crea la carpeta (por ejemplo ./inputs) o corrige [input].input_dir en config.ini."
         )
 
-    selected_input_dir = choose_load_mode(input_dir=input_dir, retry_input_dir=retry_input_dir)
+    if args.load_mode == "initial":
+        selected_input_dir = input_dir
+    elif args.load_mode == "retry":
+        selected_input_dir = retry_input_dir
+    elif args.non_interactive:
+        selected_input_dir = input_dir
+    else:
+        selected_input_dir = choose_load_mode(input_dir=input_dir, retry_input_dir=retry_input_dir)
     is_retry_mode = selected_input_dir.resolve() == retry_input_dir.resolve()
     if not selected_input_dir.exists() or not selected_input_dir.is_dir():
         raise NotADirectoryError(
@@ -1182,10 +1255,12 @@ def main() -> None:
     # 3) Confirmar homologación antes de cargar
     skip_confirm = auto_confirm_known_mapping and should_skip_mapping_confirmation(mapping_df)
 
-    if args.auto_approve_mapping or skip_confirm:
+    if args.auto_approve_mapping or args.non_interactive or skip_confirm:
         decision = "yes"
         if args.auto_approve_mapping:
             print("[HOMOLOGACION] Auto-aprobada por --auto-approve-mapping")
+        elif args.non_interactive:
+            print("[HOMOLOGACION] Auto-aprobada por --non-interactive")
         else:
             print("[HOMOLOGACION] Auto-aprobada por mapeo conocido (mapping.ini/config exacto)")
     else:
@@ -1234,7 +1309,12 @@ def main() -> None:
         fixed_cols=fixed_cols,
     )
     if missing_plan:
-        accepted_missing = confirm_missing_columns_plan(missing_plan)
+        accepted_missing = args.yes_missing_columns or args.non_interactive
+        if accepted_missing:
+            origin = "--yes-missing-columns" if args.yes_missing_columns else "--non-interactive"
+            print(f"[VALIDACION] Columnas faltantes aceptadas automáticamente por {origin}.")
+        else:
+            accepted_missing = confirm_missing_columns_plan(missing_plan)
         if not accepted_missing:
             print("[INFO] Carga detenida por usuario para ajustar columnas faltantes en el Excel.")
             return
@@ -1340,34 +1420,75 @@ def main() -> None:
         print("- Reintento completado: limpiados archivos de retry/salida asociados.")
 
 
+def run_tests() -> None:
+    """Pruebas mínimas de parsing y defaults para regresión rápida."""
+    # parse_column_default_literal
+    assert parse_column_default_literal("false")[1] is False
+    assert parse_column_default_literal("true")[1] is True
+    assert parse_column_default_literal("'abc'::text")[1] == "abc"
+    assert parse_column_default_literal("42")[1] == 42
+    assert parse_column_default_literal("3.14")[1] == 3.14
+
+    # parse_periodo_series
+    periodo = pd.Series(["ene-24", "dic/2025", "invalido"])
+    p = parse_periodo_series(periodo)
+    assert pd.notna(p.iloc[0]) and p.iloc[0].month == 1 and p.iloc[0].year == 2024
+    assert pd.notna(p.iloc[1]) and p.iloc[1].month == 12 and p.iloc[1].year == 2025
+    assert pd.isna(p.iloc[2])
+
+    # parse_numeric_series
+    nums = pd.Series(["1.234,56", "1234,56", "np.float64(12.5)", "x"])
+    n = parse_numeric_series(nums)
+    assert abs(float(n.iloc[0]) - 1234.56) < 1e-9
+    assert abs(float(n.iloc[1]) - 1234.56) < 1e-9
+    assert abs(float(n.iloc[2]) - 12.5) < 1e-9
+    assert pd.isna(n.iloc[3])
+
+    # parse_bool_series
+    b = parse_bool_series(pd.Series(["si", "no", "1", "0", "talvez"]))
+    assert b.iloc[0] is True
+    assert b.iloc[1] is False
+    assert b.iloc[2] is True
+    assert b.iloc[3] is False
+    assert b.iloc[4] == "talvez"
+
+    print("[TEST] OK - pruebas mínimas superadas")
+
+
 if __name__ == "__main__":
-    try:
-        main()
-    except FileNotFoundError as e:
-        print("\n[ERROR] Archivo no encontrado")
-        print(f"Detalle: {e}")
-        print("Acción: valida rutas en config.ini (input_dir, file_name, config-path) y vuelve a ejecutar.")
-    except NotADirectoryError as e:
-        print("\n[ERROR] Carpeta inválida")
-        print(f"Detalle: {e}")
-        print("Acción: crea la carpeta indicada o corrige [input].input_dir en config.ini.")
-    except KeyError as e:
-        print("\n[ERROR] Configuración incompleta")
-        print(f"Detalle: {e}")
-        print("Acción: completa las secciones/campos faltantes en config.ini usando config.example.ini como guía.")
-    except ValueError as e:
-        print("\n[ERROR] Validación/configuración")
-        print(f"Detalle: {e}")
-        print("Acción: corrige configuración o estructura del Excel según el mensaje y vuelve a ejecutar.")
-    except psycopg2.OperationalError as e:
-        print("\n[ERROR] Conexión a base de datos")
-        print(f"Detalle: {e}")
-        print("Acción: revisa host/port/dbname/user/password, red/VPN y permisos de acceso.")
-    except psycopg2.Error as e:
-        print("\n[ERROR] Error PostgreSQL")
-        print(f"Detalle: {e}")
-        print("Acción: revisa schema/tabla/columnas y tipos de datos; ajusta mapping/config y reintenta.")
-    except Exception as e:
-        print("\n[ERROR] Error inesperado")
-        print(f"Detalle: {e}")
-        print("Acción: revisa el traceback y comparte el error para diagnóstico.")
+    parser_smoke = argparse.ArgumentParser(add_help=False)
+    parser_smoke.add_argument("--run-tests", action="store_true")
+    smoke_args, _ = parser_smoke.parse_known_args()
+    if smoke_args.run_tests:
+        run_tests()
+    else:
+        try:
+            main()
+        except FileNotFoundError as e:
+            print("\n[ERROR] Archivo no encontrado")
+            print(f"Detalle: {e}")
+            print("Acción: valida rutas en config.ini (input_dir, file_name, config-path) y vuelve a ejecutar.")
+        except NotADirectoryError as e:
+            print("\n[ERROR] Carpeta inválida")
+            print(f"Detalle: {e}")
+            print("Acción: crea la carpeta indicada o corrige [input].input_dir en config.ini.")
+        except KeyError as e:
+            print("\n[ERROR] Configuración incompleta")
+            print(f"Detalle: {e}")
+            print("Acción: completa las secciones/campos faltantes en config.ini usando config.example.ini como guía.")
+        except ValueError as e:
+            print("\n[ERROR] Validación/configuración")
+            print(f"Detalle: {e}")
+            print("Acción: corrige configuración o estructura del Excel según el mensaje y vuelve a ejecutar.")
+        except psycopg2.OperationalError as e:
+            print("\n[ERROR] Conexión a base de datos")
+            print(f"Detalle: {e}")
+            print("Acción: revisa host/port/dbname/user/password, red/VPN y permisos de acceso.")
+        except psycopg2.Error as e:
+            print("\n[ERROR] Error PostgreSQL")
+            print(f"Detalle: {e}")
+            print("Acción: revisa schema/tabla/columnas y tipos de datos; ajusta mapping/config y reintenta.")
+        except Exception as e:
+            print("\n[ERROR] Error inesperado")
+            print(f"Detalle: {e}")
+            print("Acción: revisa el traceback y comparte el error para diagnóstico.")
