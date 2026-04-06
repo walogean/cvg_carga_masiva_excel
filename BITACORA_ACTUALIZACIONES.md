@@ -5,152 +5,231 @@ Proyecto de carga masiva Excel -> PostgreSQL con dos scripts históricos:
 - `carga_converge.py`: versión específica original (Defensa).
 - `cvg_massive_excels.py`: versión genérica y reutilizable por metadata de tabla.
 
-El objetivo de las últimas iteraciones fue estabilizar flujo de carga inicial/reintentos, limpieza de archivos y trazabilidad de errores para operación diaria.
+El objetivo de las últimas iteraciones fue estabilizar flujo de carga inicial/reintentos, limpieza de archivos, trazabilidad de errores y **flexibilizar la lectura de Excel para distintos formatos reales**.
 
 ---
 
 ## Último estado acordado con negocio/usuario
-- Mantener un flujo **limpio y recursivo**:
-  - Carga inicial inserta válidos y deriva inválidos a reintento.
-  - Reintento no ensucia `excels_done`; consume y elimina su input de retry.
-- Mejorar UX de consola con respuestas cortas (`s/n`, `s/n/r`).
-- Asegurar cierre de handles de Excel para evitar bloqueo de archivos.
-- Garantizar valores para columnas faltantes con `DEFAULT` de tabla cuando aplique.
-- Registrar errores por fila también en el Excel fuente (columna `errores`).
-- Añadir modo de operación más automatizable (non-interactive) y logging a archivo.
-- Ejecutar acciones previas por tabla (ej. `TRUNCATE`) antes de insertar masivo en modo inicial.
+- Mantener un flujo limpio y recursivo
+- UX simplificada
+- Logging y automatización
+- Soporte de encabezados dinámicos
+- Persistencia inteligente de configuraciones
 
 ---
 
 ## Cambios aplicados recientemente (esta sesión)
 
-### 1) Prompts abreviados y más claros
-**Archivo:** `cvg_massive_excels.py`
-- `ask_yes_no(...)` ahora usa:
-  - prompt: `[s/n] (s=si, n=no)`
-  - validación de entrada acorde.
-- `confirm_mapping(...)` ahora usa:
-  - prompt: `[s/n/r] (s=si, n=no, r=recargar)`
-  - validación de entrada acorde.
+### 16) Persistencia de header en mapping.ini (NUEVO 🔥)
 
-### 2) Comportamiento en reintentos (retry)
-**Archivo:** `cvg_massive_excels.py`
-- Si la ejecución es modo reintento (`retry_input_dir`) y hubo inserciones (`inserted > 0`):
-  - el Excel consumido de `inputs_retry` se **elimina**.
-  - **no** se mueve a `excels_done`.
-- Se mantiene cierre automático del ciclo cuando el retry queda 100% OK:
-  - limpieza de artefactos asociados (según `retry_index.json`).
-  - promoción de original `..._PARTIAL_ERROR` a `..._OK` si existe vínculo en índice.
+Se añade capacidad de guardar el header detectado por tabla directamente en `mapping.ini`:
 
-### 3) Columna `errores` en Excel fuente
-**Archivo:** `cvg_massive_excels.py`
-- Se añadió anotación en el Excel original cargado:
-  - crea/reutiliza columna `errores` en hoja procesada.
-  - escribe por fila todos los errores de validación concatenados.
-- Si el archivo no es `.xlsx` (ej. `.xls`), se informa y omite anotación.
+```ini
+[schema.table.__meta__]
+header_row = 3
+```
 
-### 4) Evitar insertar columna de control `errores`
-**Archivo:** `cvg_massive_excels.py`
-- Al leer Excel, se eliminan columnas de control/no insertables (actualmente `errores`) para evitar que interfieran en homologación/inserción, especialmente en retries.
+#### Comportamiento:
+- Se guarda automáticamente después de detectar o seleccionar header.
+- Se reutiliza en futuras ejecuciones.
+- No rompe ejecución si no existe.
 
-### 5) Columnas faltantes en Excel vs tabla destino
-**Archivo:** `cvg_massive_excels.py`
-Se incorporó flujo explícito para columnas insertables que existen en tabla pero no vienen en Excel:
-- Detección de faltantes (`collect_missing_input_columns`).
-- Parseo de defaults SQL literales (`parse_column_default_literal`) para casos típicos:
-  - booleanos (`true/false`), números, texto literal con comillas.
-- Prompt de confirmación al usuario:
-  - muestra por columna si irá con DEFAULT literal o NULL.
-  - `[s/n]` para continuar o detener y editar Excel.
-- Aplicación del plan antes de insertar (`apply_missing_columns_plan`):
-  - si hay default literal interpretable -> usa ese valor.
-  - si no -> envía `NULL`.
-
-> Motivo principal: evitar que columnas como `ischecked` y `nps_pregunta` queden en `NULL` cuando en tabla tienen default (`false`/`true`).
+#### Beneficio:
+- Evita redetectar siempre
+- Hace el proceso más estable y predecible
 
 ---
 
-## Cambios adicionales (modo PRO)
+### 17) Validación rápida del header persistido
 
-### 6) Logging a archivo
-**Archivo:** `cvg_massive_excels.py`
-- Flag opcional: `--log-file <nombre_o_ruta>`
-- Si no se indica, se genera log automático en `./logs/run_<timestamp>.log`.
-- Si `./logs` no existe, se crea automáticamente.
-- Si `--log-file` trae solo nombre (sin carpeta), se guarda en `./logs/<nombre>`.
-- Duplica `stdout/stderr` a archivo (formato simple con marca de inicio de ejecución).
+Antes de usar el header guardado:
+- Se valida con scoring contra columnas reales.
+- Si el score es bajo → se ignora y se detecta nuevamente.
 
-### 7) Modo no interactivo completo
-**Archivo:** `cvg_massive_excels.py`
-- Nuevo flag: `--non-interactive`
-  - auto-aprueba homologación.
-  - auto-acepta columnas faltantes (DEFAULT/NULL).
-  - evita prompt de defensa cuando aplica (usa `target` por defecto).
-- Nuevo flag: `--target-section {target,target_defensa}` para fijar destino sin prompt.
-- Nuevo flag: `--load-mode {initial,retry}` para fijar carpeta de entrada sin prompt.
-- Nuevo flag: `--yes-missing-columns` para aceptar sólo la parte de faltantes sin activar todo non-interactive.
+#### Regla:
+- Score mínimo aceptable: `>= 10`
 
-### 8) Pruebas mínimas integradas (smoke tests)
-**Archivo:** `cvg_massive_excels.py`
-- Nuevo flag: `--run-tests`
-- Ejecuta asserts de funciones críticas:
-  - parseo de defaults SQL literales
-  - parseo de periodos (`ene-24`, `dic/2025`)
-  - parseo numérico (miles/decimales y literales `np.float64(...)`)
-  - parseo booleano básico
+---
 
-### 9) Acciones previas por tabla (ej. TRUNCATE)
-**Archivos:** `cvg_massive_excels.py`, `config.example.ini`
-- Se añadió sección `[import_actions]` en `config.example.ini`.
-- Permite definir acciones SQL previas por tabla destino (ej. `TRUNCATE CONCURRENTLY ...`).
-- Ejemplo para `converge_dopd_riesgos` en esquema defensa:
-  ```ini
-  [import_actions]
-  converge_dopd_riesgos = TRUNCATE CONCURRENTLY PROYECTO_DASHBOARD_DEFENSA.converge_dopd_riesgos;
-  ```
-- Funcionamiento:
-  - Si no define acción para la tabla, se asume "sin previa".
-  - Si define, se ejecuta antes de insertar (salvo en modo reintento).
-  - En caso de error (permisos/SQL inválido), levanta excepción clara.
-  - Acción se ejecuta a través de la conexión normal y se registra en log.
+### 18) Early stop en detección de header (optimización ⚡)
+
+Se introduce corte anticipado en detección automática:
+
+```python
+EARLY_STOP_SCORE = 200
+```
+
+#### Comportamiento:
+- Si una fila supera ese score:
+  - se detiene el escaneo
+  - se selecciona inmediatamente
+
+#### Beneficio:
+- Mejora rendimiento significativamente
+- Reduce ruido en Excel grandes
+
+---
+
+### 19) Limpieza de consola (UX)
+
+Se reduce el output en consola:
+
+ANTES:
+- múltiples líneas por fila analizada
+
+AHORA:
+- solo se muestra:
+```
+[HEADER] Detección automática de fila de encabezados
+[HEADER] Fila detectada como header: X
+```
+
+#### Nota:
+- El detalle completo se mantiene en logs
+
+---
+
+### 20) Corrección crítica mapping.ini (error Unnamed)
+
+#### Problema:
+Columnas tipo `Unnamed:*` generaban duplicados en `configparser`:
+
+```
+option 'Unnamed' already exists
+```
+
+#### Solución:
+Se filtran antes de guardar:
+
+```python
+if re.fullmatch(r"unnamed[:\s_0-9\-]*", raw.strip().lower()):
+    continue
+```
+
+#### Resultado:
+- Eliminado error crítico
+- mapping.ini estable
+
+---
+
+### 21) Mejora robustez general del header handling
+
+Nuevo flujo de decisión:
+
+1. Header manual (config / usuario)
+2. Header guardado en mapping.ini
+3. Detección automática
+4. Prompt (solo si ambigüedad)
+
+#### Principio clave:
+> El sistema intenta resolver solo antes de preguntar
+
+---
+
+## Cambios previos (se mantienen vigentes)
+
+### 6) Prompts abreviados y más claros
+- `[s/n]`
+- `[s/n/r]`
+
+---
+
+### 7) Comportamiento en reintentos (retry)
+- Eliminación automática de archivos retry
+- Limpieza de artefactos
+- Promoción de estado
+
+---
+
+### 8) Columna errores en Excel fuente
+- Escritura alineada al header real
+
+---
+
+### 9) Evitar insertar columna errores
+- Eliminación previa a insert
+
+---
+
+### 10) Columnas faltantes vs tabla destino
+- Uso de DEFAULT
+- Confirmación controlada
+
+---
+
+### 11) Logging a archivo
+- `--log-file`
+- duplicación stdout/stderr
+
+---
+
+### 12) Modo no interactivo completo
+- ejecución automatizable
+
+---
+
+### 13) Pruebas mínimas integradas
+- validación básica
+
+---
+
+### 14) Acciones previas por tabla
+- `TRUNCATE` u otras
+
+---
+
+### 15) Selección de tabla Defensa
+- uso de selector dinámico
 
 ---
 
 ## Consideraciones operativas
-1. Si una carga parcial fue hecha con versión antigua, puede faltar correlación en `retry_index.json`; en ese caso la promoción automática a `_OK` puede requerir ajuste manual o crear entrada de índice.
-2. Con `processed_mode=move`, el archivo se mueve a `excels_done` sin cambiar necesariamente nombre; el control de estado puede depender del nombre heredado/manual y del índice.
-3. Se validó sintaxis Python tras cambios con `python3 -m py_compile cvg_massive_excels.py`.
-4. Para tablas que requieren truncado, agregar la acción en `config.ini` (se copia desde `config.example.ini`)
+
+1. Detección automática puede fallar en layouts muy atípicos
+2. mapping.ini ahora influye en comportamiento (persistencia)
+3. early stop acelera pero depende de scoring correcto
+4. sistema es ahora híbrido: automático + validado
+5. mantener backup de mapping.ini recomendado
 
 ---
 
-## Comandos de uso para nuevas tablas
+## Estado actual del sistema
 
-### Carga inicial (ej. tabla DopD)
+✔ Robusto  
+✔ Flexible  
+✔ Optimizado  
+✔ Menos dependiente del usuario  
+✔ Más inteligente en decisiones  
+
+---
+
+## Comandos de uso
+
+### Carga inicial
+
 ```bash
 python3 cvg_massive_excels.py \
   --non-interactive \
   --target-section target_defensa \
   --yes-missing-columns \
-  --log-file run_dopd.log
+  --log-file run.log
 ```
 
-### Reintento (si hubo inválidos)
+### Reintento
+
 ```bash
 python3 cvg_massive_excels.py \
   --non-interactive \
   --target-section target_defensa \
   --load-mode retry \
   --yes-missing-columns \
-  --log-file run_dopd_retry.log
+  --log-file run_retry.log
 ```
 
-### Solo homologación (no insertar)
-```bash
-python3 cvg_massive_excels.py \
-  --only-mapping \
-  --target-section target_defensa \
-  --load-mode initial \
-  --yes-missing-columns
-```
+---
 
+## Nota final
+
+Esta versión introduce inteligencia operativa en el tratamiento de headers y elimina uno de los principales puntos de fricción en cargas masivas reales.
+
+Fecha actualización: 2026-03-18 10:00:07

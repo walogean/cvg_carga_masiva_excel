@@ -34,15 +34,10 @@ python cvg_massive_excels.py
 
 Flujo:
 1. Pregunta si el import es para Defensa.
-2. Pregunta si es primer insert o reintento (elige `input_dir` o `retry_input_dir`).
-3. Resuelve hoja a cargar:
-   - si existe `sheet_name`, la usa;
-   - si hay una sola hoja, la usa automáticamente;
-   - si hay varias y no coincide, pregunta cuál usar.
-4. Propone homologación de columnas Excel -> tabla.
-5. Exporta homologación a Excel y guarda/actualiza `mapping.ini`.
-6. Pide confirmación (`si/no/recargar`).
-7. Si confirmas, valida e inserta en BD.
+2. Propone homologación de columnas Excel -> tabla.
+3. Exporta homologación a Excel y guarda/actualiza `mapping.ini`.
+4. Pide confirmación (`si/no/recargar`).
+5. Si confirmas, valida e inserta en BD.
 
 ---
 
@@ -109,17 +104,9 @@ python cvg_massive_excels.py --auto-approve-mapping
 - `salidas/mapping_review_<schema>_<table>_<timestamp>.xlsx`
 - `salidas/registros_invalidos_<timestamp>.xlsx` (si existen inválidos)
 - `mapping.ini` (persistente por tabla)
-- `inputs_retry/registros_invalidos_<timestamp>.xlsx` (copia para corrección y recarga puntual)
-- `retry_index.json` (relación entre parciales y reintentos para cierre automático)
-- Excel original marcado como procesado cuando hubo inserción:
-  - `..._OK` si no hubo inválidos
-  - `..._PARTIAL_ERROR` si hubo inválidos
+- Excel original marcado como procesado **solo si la carga fue completa sin inválidos**:
   - `processed_mode=move` -> mueve a `excels_done/`
-  - `processed_mode=rename` -> renombra en origen
-- Si el **reintento** termina 100% OK:
-  - se elimina el excel de `inputs_retry`
-  - se elimina el reporte de inválidos previo en `salidas`
-  - el archivo original `..._PARTIAL_ERROR` pasa a `..._OK`
+  - `processed_mode=rename` -> renombra con sufijo `_LOADED`
 
 ---
 
@@ -135,16 +122,14 @@ Cuando el script pregunta:
 
 ---
 
-## 11) Manejo de errores (mensajes guiados)
+## 10) Ejecutar en Spyder (IPython)
 
-El script captura errores comunes y muestra acción sugerida:
+```python
+%runfile "C:/ruta/cvg_massive_excels.py" --args "--only-mapping"
+```
 
-- Archivo no encontrado -> revisar rutas de `config.ini`.
-- Carpeta de entrada inválida -> crear carpeta o corregir `input_dir`.
-- Hoja inexistente -> indica hojas disponibles y corregir `sheet_name`.
-- Tabla/schema no encontrados -> revisar `[target]`/`[target_defensa]`, credenciales y permisos.
-- Error de conexión PostgreSQL -> revisar host/puerto/dbname/usuario/password/VPN.
+Ejemplo completo con config explícita:
 
-Además, en limpieza básica convierte marcadores vacíos frecuentes a `NULL` (por ejemplo `-`, `--`, `N/A`).
-
-Siempre que sea posible, corrige `config.ini` y vuelve a ejecutar.
+```python
+%runfile "C:/ruta/cvg_massive_excels.py" --args "--config-path \"C:/ruta/config.ini\" --interactive-target"
+```

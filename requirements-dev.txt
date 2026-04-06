@@ -1,0 +1,2 @@
+-r requirements.txt
+spyder-kernels==3.1.*
